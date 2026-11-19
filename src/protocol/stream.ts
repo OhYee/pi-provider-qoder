@@ -16,6 +16,7 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { resolveQoderIdentity } from "../auth/oauth.js";
+import { isQoderLoginExpired, type RenewedQoderAccess, type RenewQoderAccess } from "../auth/recovery.js";
 import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import { applyQoderCredits } from "../credits.js";
@@ -74,6 +75,32 @@ class QoderModelBusyError extends Error {
     super(message);
     this.name = "QoderModelBusyError";
   }
+}
+
+class QoderLoginExpiredError extends Error {
+  constructor(readonly sawModelOutput: boolean) {
+    super("Qoder: 105 Login expired");
+    this.name = "QoderLoginExpiredError";
+  }
+}
+
+function waitForAbort<T>(renewal: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return renewal;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    renewal.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 type ModelBusyQueueSnapshot =
@@ -507,6 +534,7 @@ export function streamQoder(
   model: Model<Api>,
   context: Context,
   options?: SimpleStreamOptions,
+  renewAccess?: RenewQoderAccess,
 ): AssistantMessageEventStream {
   const StreamCtor = (PiAi as unknown as { AssistantMessageEventStream: new () => AssistantMessageEventStream })
     .AssistantMessageEventStream;
@@ -539,24 +567,25 @@ export function streamQoder(
     try {
       const providerMode = model.provider === "qoder-cn" ? "cn" : "global";
       const region = getQoderRegionConfig(providerMode);
-      const accessToken = options?.apiKey;
-      if (!accessToken) {
+      const initialAccessToken = options?.apiKey;
+      if (!initialAccessToken) {
         throw new Error(
           providerMode === "cn"
             ? "Qoder CN credentials not set. Run /login qoder-cn or set QODERCN_PERSONAL_ACCESS_TOKEN."
             : "Qoder credentials not set. Run /login qoder or set QODER_PERSONAL_ACCESS_TOKEN.",
         );
       }
+      let accessToken = initialAccessToken;
 
       // Resolve the real Qoder identity from the job token. OMP keeps login
       // credentials in its own agent.db, not in ~/.pi/agent/auth.json, so a
       // cache miss would otherwise send uid "qoder-user" and Qoder CN rejects
       // it with "Login expired" (105).
       const ident = await resolveQoderIdentity(accessToken, model.provider, providerMode);
-      const userID = ident.userID || "qoder-user";
-      const name = ident.name || region.userNameFallback;
-      const email = ident.email || region.userEmailFallback;
-      const machineID = ident.machineID || getMachineId();
+      let userID = ident.userID || "qoder-user";
+      let name = ident.name || region.userNameFallback;
+      let email = ident.email || region.userEmailFallback;
+      let machineID = ident.machineID || getMachineId();
 
       // Both providers expose the upstream display_name (whitespace stripped)
       // as the pi id. Read the original key from cached/static config so the
@@ -598,9 +627,8 @@ export function streamQoder(
       // the Qoder server can maintain prompt cache affinity across consecutive
       // requests. Fall back to a random id only when no sessionId is available.
       const stablePart = stableHash("qoder-session", userID, qoderModel);
-      const sessionID = options?.sessionId
-        ? `${stablePart}-${options.sessionId}`
-        : `${stablePart}-${crypto.randomUUID()}`;
+      const sessionSuffix = options?.sessionId || crypto.randomUUID();
+      const sessionID = `${stablePart}-${sessionSuffix}`;
 
       // Qoder's catalog exposes no per-model output cap, so we use the
       // documented upstream ceiling (MAX_OUTPUT_TOKENS = 131072, see models.ts)
@@ -814,6 +842,9 @@ export function streamQoder(
 
         if (!response.ok) {
           const errText = await response.text();
+          if (isQoderLoginExpired(errText)) {
+            throw new QoderLoginExpiredError(false);
+          }
           if (isDailyChatLimitRejection(errText)) {
             // The same 110 rejection can also arrive as a plain HTTP error
             // instead of an SSE envelope; rotate nodes for it the same way.
@@ -887,6 +918,9 @@ export function streamQoder(
               let parsePhase: "envelope" | "payload" = "envelope";
               try {
                 const envelope = JSON.parse(dataStr);
+                if (isQoderLoginExpired(envelope.body) || isQoderLoginExpired(envelope)) {
+                  throw new QoderLoginExpiredError(sawModelOutput || droppedPayloads > 0);
+                }
                 if (envelope.statusCodeValue && envelope.statusCodeValue !== 200) {
                   const busy = parseModelBusyRejection(envelope.body);
                   if (busy?.kind === "ready") {
@@ -1269,6 +1303,7 @@ export function streamQoder(
         stream.end();
       };
 
+      let authRetried = false;
       for (let attempt = 0; ; attempt++) {
         try {
           await runAttempt();
@@ -1279,6 +1314,42 @@ export function streamQoder(
           }
           return;
         } catch (e) {
+          if (e instanceof QoderLoginExpiredError && !authRetried && !e.sawModelOutput &&
+              output.content.length === 0 && renewAccess && !options?.signal?.aborted) {
+            authRetried = true;
+            let renewed: RenewedQoderAccess;
+            try {
+              const credentialId = (options as (SimpleStreamOptions & { credentialId?: number }) | undefined)?.credentialId;
+              renewed = await waitForAbort(renewAccess(model.provider, accessToken, credentialId), options?.signal);
+              if (!renewed.accessToken || renewed.accessToken === accessToken ||
+                  !renewed.userID?.trim() || renewed.userID.trim() === "qoder-user") throw e;
+              if (userID !== "qoder-user" && userID !== renewed.userID) throw e;
+              options?.signal?.throwIfAborted();
+              const nextIdentity = await waitForAbort(
+                resolveQoderIdentity(renewed.accessToken, model.provider, providerMode),
+                options?.signal,
+              );
+              options?.signal?.throwIfAborted();
+              const observedUserID = nextIdentity.userID && nextIdentity.userID !== "qoder-user" ? nextIdentity.userID : undefined;
+              if (observedUserID && observedUserID !== renewed.userID) throw e;
+              const identityChanged = userID !== renewed.userID;
+              userID = renewed.userID;
+              accessToken = renewed.accessToken;
+              name = (observedUserID ? nextIdentity.name : renewed.name) || region.userNameFallback;
+              email = (observedUserID ? nextIdentity.email : renewed.email) || region.userEmailFallback;
+              machineID = (observedUserID ? nextIdentity.machineID : renewed.machineID) || getMachineId();
+              if (identityChanged) {
+                reqBody.session_id = `${stableHash("qoder-session", userID, qoderModel)}-${sessionSuffix}`;
+                encodedBytes = qoderEncodeBody(Buffer.from(JSON.stringify(reqBody)));
+              }
+            } catch {
+              throw e;
+            }
+            headers = buildAuthHeaders(encodedBytes, chatURL, { userID, authToken: accessToken, name, email, machineID });
+            // Authentication recovery has its own one-retry budget.
+            attempt--;
+            continue;
+          }
           if (e instanceof QoderDailyChatLimitError) {
             if (!e.sawModelOutput && chatEndpointSwitches < MAX_CHAT_ENDPOINT_SWITCHES) {
               const nextBase = await rotateChatEndpoint(

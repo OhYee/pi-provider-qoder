@@ -132,11 +132,11 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: Qo
  * Note: the auth.json path/shape is a pi internal convention, not a public API.
  * This is best-effort and falls back to null so callers can use placeholders.
  */
-export function getCachedCredentials(_accessToken: string, providerID = "qoder"): QoderCredentials | null {
+export function getCachedCredentials(accessToken: string, providerID = "qoder"): QoderCredentials | null {
   const auth = readAuthFileCached();
   if (!auth) return null;
   const creds = (auth[providerID] || (providerID === "qoder" ? auth.qoder : null)) as QoderCredentials | null;
-  if (creds?.userID || creds?.access) {
+  if ((creds?.userID || creds?.access) && (!accessToken || creds.access === accessToken)) {
     if (creds.access && creds.userID) {
       identityCache.set(`${providerID}:${creds.access}`, creds);
     }
@@ -150,8 +150,7 @@ export function getCachedCredentials(_accessToken: string, providerID = "qoder")
  * OMP (17.x) persists login credentials in its own agent.db, not in
  * ~/.pi/agent/auth.json, so the provider-side cache is frequently empty and the
  * COSY payload would fall back to uid "qoder-user" -> Qoder CN rejects it with
- * "Login expired" (105). Fetch the identity from the job token when the cache
- * misses (in-memory cached), and persist it so later requests skip the fetch.
+ * "Login expired" (105). Identity lookups must not overwrite host credentials.
  */
 export async function resolveQoderIdentity(
   accessToken: string,
@@ -181,7 +180,6 @@ export async function resolveQoderIdentity(
     expires: 0,
   };
   identityCache.set(cacheKey, creds);
-  saveCredentialsToAuthFile(providerID, creds);
   return creds;
 }
 

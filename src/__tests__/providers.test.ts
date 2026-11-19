@@ -19,6 +19,7 @@ afterEach(() => {
   }
   vi.unstubAllGlobals();
   vi.doUnmock("@earendil-works/pi-ai/compat");
+  vi.doUnmock("../protocol/stream.js");
   vi.resetModules();
 });
 
@@ -149,6 +150,9 @@ describe("qoder-api registry", () => {
     expect(providers.get("qoder-cn")?.api).toBe("qoder-api");
     expect(typeof providers.get("qoder")?.streamSimple).toBe("function");
     expect(typeof providers.get("qoder-cn")?.streamSimple).toBe("function");
+    // OMP's API registry is shared by both provider registrations.
+    expect(providers.get("qoder")?.streamSimple).toBe(providers.get("qoder-cn")?.streamSimple);
+    expect(registerSpy.mock.calls[0][0].streamSimple).toBe(providers.get("qoder")?.streamSimple);
 
     expect(getApiProvider("qoder-api")).toBeDefined();
     expect(() => streamSimple(liteModel("qoder") as never, emptyContext)).not.toThrow(
@@ -187,5 +191,59 @@ describe("qoder-api registry", () => {
     expect(providers.get("qoder-cn")?.api).toBe("qoder-api");
     expect(typeof providers.get("qoder")?.streamSimple).toBe("function");
     expect(typeof providers.get("qoder-cn")?.streamSimple).toBe("function");
+  });
+});
+
+describe("shared provider recovery dispatch", () => {
+  it("uses each request model's provider even when OMP keeps the last API registration", async () => {
+    for (const name of patEnvNames) delete process.env[name];
+    stubNetworkFailure();
+    vi.doMock("../protocol/stream.js", () => ({
+      streamQoder: (
+        model: { provider: string },
+        _context: unknown,
+        options: { apiKey: string; credentialId: number },
+        renew: (provider: string, access: string, id: number) => Promise<{ accessToken: string }>,
+      ) => renew(model.provider, options.apiKey, options.credentialId),
+    }));
+    const providers = new Map<string, Record<string, unknown>>();
+    const handlers = new Map<string, Array<(event: unknown, context: unknown) => Promise<void>>>();
+    const pi = {
+      registerProvider(provider: string, config: Record<string, unknown>) { providers.set(provider, config); },
+      on(event: string, handler: (event: unknown, context: unknown) => Promise<void>) {
+        const existing = handlers.get(event) ?? [];
+        existing.push(handler);
+        handlers.set(event, existing);
+      },
+    };
+    const credentials: Record<string, { type: string; access: string; userID: string; expires: number }> = {
+      qoder: { type: "oauth", access: "qoder-old", userID: "global-user", expires: 1 },
+      "qoder-cn": { type: "oauth", access: "qoder-cn-old", userID: "cn-user", expires: 1 },
+    };
+    const accessById = vi.fn(async (provider: string, id: number) => {
+      const accessToken = `${provider}-${id}-new`;
+      credentials[provider].access = accessToken;
+      return { ok: true, accessToken, apiKey: accessToken };
+    });
+    const authStorage = {
+      credentials: { list: (provider: string) => [{
+        id: provider === "qoder" ? 1 : 2, provider, credential: credentials[provider],
+      }] },
+      oauth: { accessById },
+    };
+    // Load after vi.doMock so registration uses the observable stream seam.
+    const { default: registerProviders } = await import("../index.js");
+    await registerProviders(pi as never);
+    await handlers.get("session_start")?.[0]({}, {
+      modelRegistry: { authStorage, getApiKeyForProvider: vi.fn().mockResolvedValue(undefined) },
+    });
+    const dispatch = providers.get("qoder-cn")?.streamSimple as (
+      model: { provider: string }, context: unknown, options: { apiKey: string; credentialId: number },
+    ) => Promise<{ accessToken: string }>;
+    await expect(dispatch({ provider: "qoder" }, {}, { apiKey: "qoder-old", credentialId: 1 }))
+      .resolves.toMatchObject({ accessToken: "qoder-1-new", userID: "global-user" });
+    await expect(dispatch({ provider: "qoder-cn" }, {}, { apiKey: "qoder-cn-old", credentialId: 2 }))
+      .resolves.toMatchObject({ accessToken: "qoder-cn-2-new", userID: "cn-user" });
+    expect(accessById.mock.calls.map(([provider, id]) => [provider, id])).toEqual([["qoder", 1], ["qoder-cn", 2]]);
   });
 });

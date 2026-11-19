@@ -12,6 +12,8 @@ import type {
 } from "@earendil-works/pi-ai";
 import * as PiAi from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveQoderIdentity } from "../auth/oauth.js";
+import * as Cosy from "../cosy.js";
 import { clearQoderModelsMemCache } from "../catalog.js";
 import type { QoderUsage } from "../credits.js";
 import { resolveRequestContext, streamQoder } from "../protocol/stream.js";
@@ -1484,5 +1486,195 @@ describe("resolveRequestContext", () => {
     // (reqBody re-injects systemText as its own role:system message).
     expect(resolved.messages.some((m) => m.role === "system")).toBe(false);
     expect(resolved.messages.some((m) => m.role === "user")).toBe(true);
+  });
+});
+
+describe("streamQoder login-expiry recovery", () => {
+  const originalFetch = globalThis.fetch;
+  const expired = { code: "105", message: "Login expired" };
+  const expiredSse = sseEnvelope(expired, 403, "Forbidden");
+  const renewed = (accessToken: string, userID = "test-user") => ({ accessToken, userID });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it.each(["HTTP", "SSE"])("renews an explicit %s 105 once and resigns with the new token", async (wire) => {
+    const first = wire === "HTTP"
+      ? new Response(JSON.stringify(expired), { status: 403 })
+      : new Response(expiredSse, { status: 200 });
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
+    const renew = vi.fn().mockResolvedValue(renewed("new-token"));
+    const headers = vi.spyOn(Cosy, "buildAuthHeaders");
+    const events = await consume(streamQoder(makeModel(), makeContext(), {
+      apiKey: "old-token", credentialId: 41,
+    } as never, renew));
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(renew).toHaveBeenCalledWith("qoder", "old-token", 41);
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+    expect(headers.mock.calls.map((call) => call[2].authToken)).toEqual(["old-token", "new-token"]);
+    expect(vi.mocked(resolveQoderIdentity)).toHaveBeenCalledWith("new-token", "qoder", "global");
+    expect(events.filter((event) => event.type === "start")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "error")).toHaveLength(0);
+  });
+
+  it("dispatches CN recovery by the model provider and its credential id", async () => {
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(expiredSse))
+      .mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
+    const renew = vi.fn().mockResolvedValue(renewed("cn-new"));
+    const events = await consume(streamQoder(makeModel("qoder-cn", "Qwen3.7-Plus"), makeContext(), {
+      apiKey: "cn-old", credentialId: 22,
+    } as never, renew));
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(renew).toHaveBeenCalledWith("qoder-cn", "cn-old", 22);
+    expect(events.some((event) => event.type === "done")).toBe(true);
+  });
+
+  it.each([
+    new Response(JSON.stringify({ code: "403", message: "Forbidden" }), { status: 403 }),
+    new Response(JSON.stringify({ code: "10605", message: "Login expired" }), { status: 403 }),
+    new Response("Unauthorized", { status: 401 }),
+  ])("does not renew ordinary HTTP errors", async (response) => {
+    globalThis.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+    const renew = vi.fn().mockResolvedValue(renewed("new"));
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" }, renew));
+    expect(renew).not.toHaveBeenCalled();
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+    const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
+    expect(error.error.errorMessage).toContain(String(response.status));
+    expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+
+  it.each([
+    sseEnvelope(chunk({ content: "partial" })),
+    sseEnvelope(chunk({ reasoning_content: "thinking" })),
+    sseEnvelope(chunk({ tool_calls: [{ index: 0, function: { arguments: "{" } }] })),
+    sseTruncatedPayload(chunk({ content: "unparseable output" })),
+  ])("does not replay after model output or a dropped payload", async (partial) => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(partial + expiredSse)) as unknown as typeof fetch;
+    const renew = vi.fn().mockResolvedValue(renewed("new"));
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" }, renew));
+    expect(renew).not.toHaveBeenCalled();
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+
+  it("does not retry twice, or retry if renewal returns the rejected token", async () => {
+    const renew = vi.fn().mockResolvedValue(renewed("new"));
+    globalThis.fetch = vi.fn().mockImplementation(async () => new Response(expiredSse)) as unknown as typeof fetch;
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" }, renew));
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+    expect(events.some((event) => event.type === "error")).toBe(true);
+
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
+    const unchanged = vi.fn().mockResolvedValue(renewed("old"));
+    const unchangedEvents = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" }, unchanged));
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+    expect(unchangedEvents.some((event) => event.type === "error")).toBe(true);
+  });
+
+  it("retains the original 105 when renewal fails", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
+    const renew = vi.fn().mockRejectedValue(new Error("host failure"));
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" }, renew));
+    const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
+    expect(error.error.errorMessage).toBe("Qoder: 105 Login expired");
+    expect(error.error.errorMessage).not.toContain("host failure");
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay if the renewed identity belongs to a different user", async () => {
+    vi.mocked(resolveQoderIdentity).mockResolvedValueOnce({
+      access: "old", userID: "user-a", email: "", name: "", machineID: "m", refresh: "", expires: 0,
+    }).mockResolvedValueOnce({
+      access: "new", userID: "user-b", email: "", name: "", machineID: "m", refresh: "", expires: 0,
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" }, vi.fn().mockResolvedValue(renewed("new", "user-a"))));
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+
+  it("aborts one waiting stream without cancelling shared host renewal", async () => {
+    let started!: () => void;
+    let finish!: (value: { accessToken: string; userID: string }) => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const renewal = new Promise<{ accessToken: string; userID: string }>((resolve) => { finish = resolve; });
+    const renew = vi.fn(() => { started(); return renewal; });
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
+    const pending = consume(streamQoder(makeModel(), makeContext(), { apiKey: "old", signal: controller.signal }, renew));
+    await startedPromise;
+    controller.abort();
+    const events = await pending;
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === "error" && event.error.stopReason === "aborted")).toBe(true);
+    finish(renewed("new"));
+    await expect(renewal).resolves.toEqual(renewed("new"));
+  });
+
+  it.each(["real-user", "qoder-user"])("uses the host row identity when old userinfo is unavailable and new returns %s", async (nextUserID) => {
+    const placeholder = { access: "", userID: "qoder-user", email: "", name: "", machineID: "m", refresh: "", expires: 0 };
+    vi.mocked(resolveQoderIdentity).mockResolvedValueOnce(placeholder).mockResolvedValueOnce({ ...placeholder, userID: nextUserID });
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(expiredSse))
+      .mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
+    const headers = vi.spyOn(Cosy, "buildAuthHeaders");
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old", sessionId: "session" },
+      vi.fn().mockResolvedValue(renewed("new", "real-user"))));
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+    expect(headers.mock.calls.map((call) => call[2].userID)).toEqual(["qoder-user", "real-user"]);
+    const calls = vi.mocked(globalThis.fetch).mock.calls;
+    expect(decodeQoderBody(calls[0][1]).session_id).not.toBe(decodeQoderBody(calls[1][1]).session_id);
+    expect(events.some((event) => event.type === "done")).toBe(true);
+  });
+
+  it("never trusts a placeholder from the host row", async () => {
+    const placeholder = { access: "", userID: "qoder-user", email: "", name: "", machineID: "m", refresh: "", expires: 0 };
+    vi.mocked(resolveQoderIdentity).mockResolvedValueOnce(placeholder);
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" },
+      vi.fn().mockResolvedValue(renewed("new", "qoder-user"))));
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+
+  it("surfaces a non-rotatable 105 after partial tool data or a second rejection", async () => {
+    const partialTool = sseEnvelope(chunk({ tool_calls: [{ index: 0, function: { arguments: "{" } }] }));
+    for (const partial of [partialTool, ""]) {
+      globalThis.fetch = vi.fn().mockImplementation(async () => new Response(partial + expiredSse)) as unknown as typeof fetch;
+      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" },
+        vi.fn().mockResolvedValue(renewed("new"))));
+      const terminal = events.find((event) => event.type === "error") as { error: AssistantMessage & { errorStatus?: number } };
+      expect(terminal.error.errorMessage).toBe("Qoder: 105 Login expired");
+      expect(terminal.error.errorMessage).not.toMatch(/\b(?:401|403|unauthorized|forbidden)\b/i);
+      expect(terminal.error.errorStatus).toBeUndefined();
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(partial ? 1 : 2);
+    }
+  });
+
+  it("aborts while the refreshed identity lookup is hung", async () => {
+    let started!: () => void;
+    let finish!: (value: { access: string; userID: string; email: string; name: string; machineID: string; refresh: string; expires: number }) => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const lookup = new Promise<{ access: string; userID: string; email: string; name: string; machineID: string; refresh: string; expires: number }>((resolve) => { finish = resolve; });
+    vi.mocked(resolveQoderIdentity)
+      .mockResolvedValueOnce({ access: "old", userID: "test-user", email: "", name: "", machineID: "m", refresh: "", expires: 0 })
+      .mockImplementationOnce(() => { started(); return lookup; });
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
+    const controller = new AbortController();
+    const pending = consume(streamQoder(makeModel(), makeContext(), { apiKey: "old", signal: controller.signal },
+      vi.fn().mockResolvedValue(renewed("new"))));
+    await startedPromise;
+    controller.abort();
+    const events = await pending;
+    expect(events.some((event) => event.type === "error" && event.error.stopReason === "aborted")).toBe(true);
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+    finish({ access: "new", userID: "test-user", email: "", name: "", machineID: "m", refresh: "", expires: 0 });
+    await lookup;
   });
 });

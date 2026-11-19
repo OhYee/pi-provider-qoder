@@ -8,6 +8,7 @@ import {
   type QoderCredentials,
   refreshQoderTokenForMode,
 } from "./auth/oauth.js";
+import { createQoderAuthRecovery, type RenewQoderAccess } from "./auth/recovery.js";
 import { fetchQoderUsageForMode } from "./auth/usage.js";
 import { getCachedModels, isCacheStale, staticCnModels, staticModels, updateQoderModelsCache } from "./catalog.js";
 import { registerQoderCreditDisplay } from "./credit-display.js";
@@ -29,13 +30,13 @@ const QODER_API = "qoder-api" as Api;
 const requirePackageJson = createRequire(import.meta.url);
 const CURRENT_VERSION: string = (requirePackageJson("../package.json") as { version?: string }).version ?? "0.0.0";
 
-async function registerQoderApi(): Promise<void> {
+async function registerQoderApi(stream: typeof streamQoder): Promise<void> {
   try {
     const compat = await import("@earendil-works/pi-ai/compat");
     const register = (compat as Record<string, unknown>).registerApiProvider;
     if (typeof register !== "function") return; // OMP / hosts without the export
     (register as (config: unknown, source: string) => void)(
-      { api: QODER_API, stream: streamQoder, streamSimple: streamQoder },
+      { api: QODER_API, stream, streamSimple: stream },
       "provider:qoder",
     );
   } catch {
@@ -119,7 +120,7 @@ function createQoderOAuth(mode: QoderMode): OAuthConfigWithUsage {
   };
 }
 
-function registerQoderProvider(pi: ExtensionAPI, mode: QoderMode): void {
+function registerQoderProvider(pi: ExtensionAPI, mode: QoderMode, stream: typeof streamQoder): void {
   const providerID = getQoderRegionConfig(mode).providerID;
   const oauth = createQoderOAuth(mode);
   // `usage` is OMP's slot for `omp usage`; pi's published ProviderConfig has no
@@ -135,7 +136,7 @@ function registerQoderProvider(pi: ExtensionAPI, mode: QoderMode): void {
     oauth: oauth as ProviderConfig["oauth"],
     // pi-coding-agent resolves its own nested @earendil-works/pi-ai copy, so the
     // structurally identical Model/Context types are nominally distinct here.
-    streamSimple: streamQoder as unknown as ProviderConfig["streamSimple"],
+    streamSimple: stream as unknown as ProviderConfig["streamSimple"],
     usage: createQoderUsageProvider(mode, providerID),
   };
   pi.registerProvider(providerID, config);
@@ -159,7 +160,16 @@ async function refreshModelsAtStartup(mode: QoderMode): Promise<void> {
 }
 
 export default async function (pi: ExtensionAPI) {
-  await registerQoderApi();
+  let authOwner: unknown;
+  let hostRenewal: RenewQoderAccess | undefined;
+  const renew: RenewQoderAccess = (provider, rejectedAccess, credentialId) => {
+    if (!hostRenewal) throw new Error("Qoder authentication recovery requires an initialized host session.");
+    return hostRenewal(provider, rejectedAccess, credentialId);
+  };
+  // OMP dispatches by API, not provider: both registrations must use this
+  // dispatcher and choose the auth owner from the request's model.provider.
+  const stream: typeof streamQoder = (model, context, options) => streamQoder(model, context, options, renew);
+  await registerQoderApi(stream);
 
   // npm-installed extensions get no update check from the host, so report a
   // stale install once per start. Never awaited: registration must not wait on
@@ -201,6 +211,12 @@ export default async function (pi: ExtensionAPI) {
   // Login/refresh are the other rebuild triggers; this covers the case where
   // the cache was deleted while the token is still valid.
   pi.on("session_start", async (_event, ctx) => {
+    const registry = ctx.modelRegistry as unknown as { authStorage?: unknown; runtime?: unknown };
+    const owner = registry.authStorage ?? registry.runtime;
+    if (owner && owner !== authOwner) {
+      authOwner = owner;
+      hostRenewal = createQoderAuthRecovery(owner as Parameters<typeof createQoderAuthRecovery>[0]);
+    }
     for (const mode of QODER_MODES) {
       try {
         const region = getQoderRegionConfig(mode);
@@ -218,6 +234,6 @@ export default async function (pi: ExtensionAPI) {
     }
   });
 
-  for (const mode of QODER_MODES) registerQoderProvider(pi, mode);
+  for (const mode of QODER_MODES) registerQoderProvider(pi, mode, stream);
   registerQoderCreditDisplay(pi);
 }

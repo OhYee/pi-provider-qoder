@@ -9,6 +9,7 @@ import {
   getCachedCredentials,
   getQoderPatForMode,
   loginQoderForMode,
+  resolveQoderIdentity,
 } from "../auth/oauth.js";
 import { credentialsFromPat } from "../auth/pat.js";
 import { updateQoderModelsCache } from "../catalog.js";
@@ -42,6 +43,7 @@ vi.mock("../auth/pat.js", () => ({
     machineID: "mock-machine-id",
     type: "oauth",
   }),
+  fetchUserInfo: vi.fn().mockResolvedValue({ userID: "new-user", email: "new@example.com", name: "New User" }),
   isPatRefresh: vi.fn().mockReturnValue(false),
   decodePatRefresh: vi.fn(),
 }));
@@ -200,5 +202,26 @@ describe("loginQoderForMode waits for the model cache", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("request identity binding", () => {
+  afterEach(() => {
+    rmSync(AUTH_FILE, { force: true });
+    clearQoderAuthMemCache();
+  });
+
+  it("does not use or overwrite another token's cached credentials", async () => {
+    const stored = {
+      qoder: { type: "oauth", access: "old", refresh: "keep-refresh", expires: 1234, userID: "old-user" },
+    };
+    writeFileSync(AUTH_FILE, JSON.stringify(stored), "utf8");
+    clearQoderAuthMemCache();
+    expect(getCachedCredentials("old", "qoder")?.userID).toBe("old-user");
+    expect(getCachedCredentials("new", "qoder")).toBeNull();
+    const identity = await resolveQoderIdentity("new", "qoder", "global");
+    expect(identity.userID).toBe("new-user");
+    expect(JSON.parse(readFileSync(AUTH_FILE, "utf8"))).toEqual(stored);
+    expect((await resolveQoderIdentity("old", "qoder", "global")).userID).toBe("old-user");
   });
 });

@@ -2,6 +2,10 @@
 
 A [pi](https://shittycodingagent.ai/) extension that connects pi to Qoder.
 
+This checkout contains local authentication-recovery changes. The upstream npm
+package and marketplace commands below install the upstream release, not these
+unpublished changes.
+
 ```bash
 pi install npm:pi-provider-qoder
 # or: omp install npm:pi-provider-qoder
@@ -38,6 +42,25 @@ Both providers register together.
 - Env (first match): `QODERCN_API_KEY`, `QODERCN_PERSONAL_ACCESS_TOKEN`, `QODERCN_PAT`
 
 A PAT (`pt-...`) is exchanged for a job token. Setting any of those env vars logs the provider in at startup.
+
+### Expired-login recovery
+
+When a chat request receives an explicit `105 / Login expired` rejection, either
+as an HTTP error or inside an SSE envelope, the extension asks the host to renew
+the rejected OAuth credential and retries once. Concurrent requests for the same
+provider, credential row and rejected token share the renewal. The retry uses the refreshed
+identity and signature, and is skipped after any model output or tool-call
+fragment, an unparseable payload, cancellation, or unsuccessful renewal. Other
+errors, including ordinary 401/403 responses, do not trigger this recovery.
+
+OMP resolves the exact credential row from request provenance, or requires a
+unique matching OAuth token when no row ID is available. Pi's credential store
+is used for refresh and persistence; old Pi versions must expose their locked
+storage backend. A missing or ambiguous credential, missing real user ID, changed
+account, unsupported host, or unchanged access token leaves a terminal 105 error.
+The terminal error retains `105 / Login expired` but omits the HTTP status to
+prevent host-level account rotation from replaying the request. Recovery is
+available after the host's `session_start` event; it does not switch accounts.
 
 ## Models
 
