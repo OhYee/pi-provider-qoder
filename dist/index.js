@@ -10446,7 +10446,8 @@ function transformMessagesForQoder(messages) {
       }
       continue;
     }
-    if (msg.role === "user") {
+    const role = msg.role;
+    if (role === "user" || role === "developer" || role === "system") {
       let content = "";
       if (typeof msg.content === "string") {
         content = msg.content;
@@ -10471,6 +10472,9 @@ function transformMessagesForQoder(messages) {
         } else {
           content = getContentText(msg);
         }
+      }
+      if (role !== "user" && (typeof content === "string" ? !content : content.length === 0)) {
+        continue;
       }
       normalizedMessages.push({
         role: "user",

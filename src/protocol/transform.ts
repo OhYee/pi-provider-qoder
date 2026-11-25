@@ -107,7 +107,8 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
       continue;
     }
 
-    if (msg.role === "user") {
+    const role = msg.role as string;
+    if (role === "user" || role === "developer" || role === "system") {
       let content: QoderContent = "";
       if (typeof msg.content === "string") {
         content = msg.content;
@@ -134,6 +135,15 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
         } else {
           content = getContentText(msg);
         }
+      }
+      // OMP converts agent-attributed custom messages (async job completions,
+      // perch worker updates/heartbeats, task ledgers) into role:"developer".
+      // Qoder's gateway and reasoning models expect conversation turns to use
+      // role:"user" rather than mid-conversation developer/system roles, so
+      // forward non-empty developer/system messages as user turns instead of
+      // dropping them silently.
+      if (role !== "user" && (typeof content === "string" ? !content : content.length === 0)) {
+        continue;
       }
       normalizedMessages.push({
         role: "user",

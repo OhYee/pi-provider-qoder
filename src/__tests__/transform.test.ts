@@ -597,4 +597,22 @@ describe("transformMessagesForQoder tool call ID rewriting", () => {
 
     expect(result.map((m) => (m as { role: string }).role)).toEqual(["user", "user"]);
   });
+
+  it("forwards developer and mid-conversation system messages as user turns instead of dropping them", () => {
+    const msgs = [
+      { role: "user", content: "start task" },
+      { role: "assistant", content: [{ type: "text", text: "dispatched" }] },
+      { role: "developer", content: "[Perch async update]\nStatus: completed" },
+      { role: "developer", content: "" },
+      { role: "system", content: [{ type: "text", text: "<system-notice>Job done</system-notice>" }] },
+    ] as unknown as Message[];
+    const result = transformMessagesForQoder(msgs);
+
+    expect(result).toEqual([
+      { role: "user", content: "start task" },
+      { role: "assistant", content: "dispatched" },
+      { role: "user", content: "[Perch async update]\nStatus: completed" },
+      { role: "user", content: "<system-notice>Job done</system-notice>" },
+    ]);
+  });
 });
