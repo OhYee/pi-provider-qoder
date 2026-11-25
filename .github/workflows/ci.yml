@@ -21,6 +21,12 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
+      # npm ci 的 prepare 会重新构建入口，确保直接从 GitHub 安装时使用的产物与源码一致。
+      - name: Verify checked-in extension bundle
+        run: |
+          git ls-files --error-unmatch dist/index.js > /dev/null
+          git diff --exit-code -- dist/index.js
+
       # Auto-update only compares catalog entries that declare a version, so a
       # release whose catalog still says the old number silently stops updating.
       - name: Marketplace catalog matches package.json

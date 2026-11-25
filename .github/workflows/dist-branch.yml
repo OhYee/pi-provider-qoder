@@ -3,9 +3,8 @@ name: dist-branch
 # Publish the built extension to a `dist` branch on every release tag.
 #
 # Marketplace installs clone a repository and symlink it; they never run a build.
-# `dist/` is gitignored on main, so a marketplace entry pointing at main would
-# produce a package whose `pi.extensions` target does not exist. This workflow
-# keeps a build-only branch that a catalog entry can point at.
+# Releases publish a build-only branch for the marketplace catalog. The default
+# branch also carries its bundle for direct GitHub installs.
 
 on:
   push:

@@ -2,9 +2,13 @@
 
 A [pi](https://shittycodingagent.ai/) extension that connects pi to Qoder.
 
-This checkout contains local authentication-recovery changes. The upstream npm
-package and marketplace commands below install the upstream release, not these
-unpublished changes.
+This fork contains authentication-recovery changes. Install its default branch
+directly in omp; the upstream npm and marketplace commands below install an
+upstream release, not this fork:
+
+```bash
+omp plugin install github:OhYee/pi-provider-qoder
+```
 
 ```bash
 pi install npm:pi-provider-qoder
@@ -203,11 +207,15 @@ omp plugin install pi-provider-qoder@pi-provider-qoder
 omp config set marketplace.autoUpdate auto
 ```
 
-Marketplace installs clone a repository and symlink it — they never run a build — and
-`dist/` is gitignored on `main`, so releases publish the built extension to a `dist`
-branch (`.github/workflows/dist-branch.yml`). The catalog at `.omp-plugin/marketplace.json`
-must declare the released version: `npm run release:sync-marketplace` keeps it in step,
-and `prepublishOnly` fails when the two drift.
+Marketplace installs clone a repository and symlink it — they never run a build.
+Releases publish a build-only `dist` branch for the marketplace catalog
+(`.github/workflows/dist-branch.yml`). This fork also tracks `dist/index.js` on
+`main` for direct GitHub installs. After changing the source, run `npm run build`
+and commit the updated bundle; CI checks that it matches the source.
+
+The catalog at `.omp-plugin/marketplace.json` must declare the released version:
+`npm run release:sync-marketplace` keeps it in step, and `prepublishOnly` fails
+when the two drift.
 ## Version notices
 
 npm-installed extensions get no update check from the host, so the extension asks the
