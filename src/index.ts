@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import type { Api, Model, OAuthCredentials, RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
@@ -15,7 +14,6 @@ import { registerQoderCreditDisplay } from "./credit-display.js";
 import { applyCachedChatEndpoint, refreshChatEndpoint } from "./endpoints.js";
 import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
-import { checkForUpdate } from "./update-check.js";
 import { createQoderUsageProvider, type UsageProvider } from "./usage-provider.js";
 
 // pi supports a `fetchUsage` hook on the oauth config at runtime, but it is not
@@ -25,10 +23,6 @@ type OAuthConfigWithUsage = NonNullable<ProviderConfig["oauth"]> & {
 };
 
 const QODER_API = "qoder-api" as Api;
-
-// Version of the running extension, used by the startup update notice.
-const requirePackageJson = createRequire(import.meta.url);
-const CURRENT_VERSION: string = (requirePackageJson("../package.json") as { version?: string }).version ?? "0.0.0";
 
 async function registerQoderApi(stream: typeof streamQoder): Promise<void> {
   try {
@@ -170,17 +164,6 @@ export default async function (pi: ExtensionAPI) {
   // dispatcher and choose the auth owner from the request's model.provider.
   const stream: typeof streamQoder = (model, context, options) => streamQoder(model, context, options, renew);
   await registerQoderApi(stream);
-
-  // npm-installed extensions get no update check from the host, so report a
-  // stale install once per start. Never awaited: registration must not wait on
-  // the network, and a failure here is uninteresting.
-  void checkForUpdate({
-    currentVersion: CURRENT_VERSION,
-    hostExecutable: process.argv[1],
-    disabled: process.env.PI_PROVIDER_QODER_SKIP_UPDATE_CHECK === "1",
-  }).then((notice) => {
-    if (notice) console.error(notice);
-  });
 
   for (const mode of QODER_MODES) {
     const providerID = getQoderRegionConfig(mode).providerID;

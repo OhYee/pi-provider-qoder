@@ -13,8 +13,8 @@ import type {
 import * as PiAi from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveQoderIdentity } from "../auth/oauth.js";
-import * as Cosy from "../cosy.js";
 import { clearQoderModelsMemCache } from "../catalog.js";
+import * as Cosy from "../cosy.js";
 import type { QoderUsage } from "../credits.js";
 import { resolveRequestContext, streamQoder } from "../protocol/stream.js";
 import { loadLiveFixture } from "./live-fixture.js";
@@ -1501,15 +1501,27 @@ describe("streamQoder login-expiry recovery", () => {
   });
 
   it.each(["HTTP", "SSE"])("renews an explicit %s 105 once and resigns with the new token", async (wire) => {
-    const first = wire === "HTTP"
-      ? new Response(JSON.stringify(expired), { status: 403 })
-      : new Response(expiredSse, { status: 200 });
-    globalThis.fetch = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
+    const first =
+      wire === "HTTP"
+        ? new Response(JSON.stringify(expired), { status: 403 })
+        : new Response(expiredSse, { status: 200 });
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
     const renew = vi.fn().mockResolvedValue(renewed("new-token"));
     const headers = vi.spyOn(Cosy, "buildAuthHeaders");
-    const events = await consume(streamQoder(makeModel(), makeContext(), {
-      apiKey: "old-token", credentialId: 41,
-    } as never, renew));
+    const events = await consume(
+      streamQoder(
+        makeModel(),
+        makeContext(),
+        {
+          apiKey: "old-token",
+          credentialId: 41,
+        } as never,
+        renew,
+      ),
+    );
     expect(renew).toHaveBeenCalledTimes(1);
     expect(renew).toHaveBeenCalledWith("qoder", "old-token", 41);
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
@@ -1521,13 +1533,22 @@ describe("streamQoder login-expiry recovery", () => {
   });
 
   it("dispatches CN recovery by the model provider and its credential id", async () => {
-    globalThis.fetch = vi.fn()
+    globalThis.fetch = vi
+      .fn()
       .mockResolvedValueOnce(new Response(expiredSse))
       .mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
     const renew = vi.fn().mockResolvedValue(renewed("cn-new"));
-    const events = await consume(streamQoder(makeModel("qoder-cn", "Qwen3.7-Plus"), makeContext(), {
-      apiKey: "cn-old", credentialId: 22,
-    } as never, renew));
+    const events = await consume(
+      streamQoder(
+        makeModel("qoder-cn", "Qwen3.7-Plus"),
+        makeContext(),
+        {
+          apiKey: "cn-old",
+          credentialId: 22,
+        } as never,
+        renew,
+      ),
+    );
     expect(renew).toHaveBeenCalledTimes(1);
     expect(renew).toHaveBeenCalledWith("qoder-cn", "cn-old", 22);
     expect(events.some((event) => event.type === "done")).toBe(true);
@@ -1588,13 +1609,29 @@ describe("streamQoder login-expiry recovery", () => {
   });
 
   it("does not replay if the renewed identity belongs to a different user", async () => {
-    vi.mocked(resolveQoderIdentity).mockResolvedValueOnce({
-      access: "old", userID: "user-a", email: "", name: "", machineID: "m", refresh: "", expires: 0,
-    }).mockResolvedValueOnce({
-      access: "new", userID: "user-b", email: "", name: "", machineID: "m", refresh: "", expires: 0,
-    });
+    vi.mocked(resolveQoderIdentity)
+      .mockResolvedValueOnce({
+        access: "old",
+        userID: "user-a",
+        email: "",
+        name: "",
+        machineID: "m",
+        refresh: "",
+        expires: 0,
+      })
+      .mockResolvedValueOnce({
+        access: "new",
+        userID: "user-b",
+        email: "",
+        name: "",
+        machineID: "m",
+        refresh: "",
+        expires: 0,
+      });
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
-    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" }, vi.fn().mockResolvedValue(renewed("new", "user-a"))));
+    const events = await consume(
+      streamQoder(makeModel(), makeContext(), { apiKey: "old" }, vi.fn().mockResolvedValue(renewed("new", "user-a"))),
+    );
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
     expect(events.some((event) => event.type === "error")).toBe(true);
   });
@@ -1602,12 +1639,21 @@ describe("streamQoder login-expiry recovery", () => {
   it("aborts one waiting stream without cancelling shared host renewal", async () => {
     let started!: () => void;
     let finish!: (value: { accessToken: string; userID: string }) => void;
-    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
-    const renewal = new Promise<{ accessToken: string; userID: string }>((resolve) => { finish = resolve; });
-    const renew = vi.fn(() => { started(); return renewal; });
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const renewal = new Promise<{ accessToken: string; userID: string }>((resolve) => {
+      finish = resolve;
+    });
+    const renew = vi.fn(() => {
+      started();
+      return renewal;
+    });
     const controller = new AbortController();
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
-    const pending = consume(streamQoder(makeModel(), makeContext(), { apiKey: "old", signal: controller.signal }, renew));
+    const pending = consume(
+      streamQoder(makeModel(), makeContext(), { apiKey: "old", signal: controller.signal }, renew),
+    );
     await startedPromise;
     controller.abort();
     const events = await pending;
@@ -1617,28 +1663,62 @@ describe("streamQoder login-expiry recovery", () => {
     await expect(renewal).resolves.toEqual(renewed("new"));
   });
 
-  it.each(["real-user", "qoder-user"])("uses the host row identity when old userinfo is unavailable and new returns %s", async (nextUserID) => {
-    const placeholder = { access: "", userID: "qoder-user", email: "", name: "", machineID: "m", refresh: "", expires: 0 };
-    vi.mocked(resolveQoderIdentity).mockResolvedValueOnce(placeholder).mockResolvedValueOnce({ ...placeholder, userID: nextUserID });
-    globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce(new Response(expiredSse))
-      .mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
-    const headers = vi.spyOn(Cosy, "buildAuthHeaders");
-    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old", sessionId: "session" },
-      vi.fn().mockResolvedValue(renewed("new", "real-user"))));
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
-    expect(headers.mock.calls.map((call) => call[2].userID)).toEqual(["qoder-user", "real-user"]);
-    const calls = vi.mocked(globalThis.fetch).mock.calls;
-    expect(decodeQoderBody(calls[0][1]).session_id).not.toBe(decodeQoderBody(calls[1][1]).session_id);
-    expect(events.some((event) => event.type === "done")).toBe(true);
-  });
+  it.each(["real-user", "qoder-user"])(
+    "uses the host row identity when old userinfo is unavailable and new returns %s",
+    async (nextUserID) => {
+      const placeholder = {
+        access: "",
+        userID: "qoder-user",
+        email: "",
+        name: "",
+        machineID: "m",
+        refresh: "",
+        expires: 0,
+      };
+      vi.mocked(resolveQoderIdentity)
+        .mockResolvedValueOnce(placeholder)
+        .mockResolvedValueOnce({ ...placeholder, userID: nextUserID });
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(expiredSse))
+        .mockResolvedValueOnce(new Response(SUCCESS_SSE)) as unknown as typeof fetch;
+      const headers = vi.spyOn(Cosy, "buildAuthHeaders");
+      const events = await consume(
+        streamQoder(
+          makeModel(),
+          makeContext(),
+          { apiKey: "old", sessionId: "session" },
+          vi.fn().mockResolvedValue(renewed("new", "real-user")),
+        ),
+      );
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+      expect(headers.mock.calls.map((call) => call[2].userID)).toEqual(["qoder-user", "real-user"]);
+      const calls = vi.mocked(globalThis.fetch).mock.calls;
+      expect(decodeQoderBody(calls[0][1]).session_id).not.toBe(decodeQoderBody(calls[1][1]).session_id);
+      expect(events.some((event) => event.type === "done")).toBe(true);
+    },
+  );
 
   it("never trusts a placeholder from the host row", async () => {
-    const placeholder = { access: "", userID: "qoder-user", email: "", name: "", machineID: "m", refresh: "", expires: 0 };
+    const placeholder = {
+      access: "",
+      userID: "qoder-user",
+      email: "",
+      name: "",
+      machineID: "m",
+      refresh: "",
+      expires: 0,
+    };
     vi.mocked(resolveQoderIdentity).mockResolvedValueOnce(placeholder);
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
-    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" },
-      vi.fn().mockResolvedValue(renewed("new", "qoder-user"))));
+    const events = await consume(
+      streamQoder(
+        makeModel(),
+        makeContext(),
+        { apiKey: "old" },
+        vi.fn().mockResolvedValue(renewed("new", "qoder-user")),
+      ),
+    );
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
     expect(events.some((event) => event.type === "error")).toBe(true);
   });
@@ -1646,10 +1726,15 @@ describe("streamQoder login-expiry recovery", () => {
   it("surfaces a non-rotatable 105 after partial tool data or a second rejection", async () => {
     const partialTool = sseEnvelope(chunk({ tool_calls: [{ index: 0, function: { arguments: "{" } }] }));
     for (const partial of [partialTool, ""]) {
-      globalThis.fetch = vi.fn().mockImplementation(async () => new Response(partial + expiredSse)) as unknown as typeof fetch;
-      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "old" },
-        vi.fn().mockResolvedValue(renewed("new"))));
-      const terminal = events.find((event) => event.type === "error") as { error: AssistantMessage & { errorStatus?: number } };
+      globalThis.fetch = vi
+        .fn()
+        .mockImplementation(async () => new Response(partial + expiredSse)) as unknown as typeof fetch;
+      const events = await consume(
+        streamQoder(makeModel(), makeContext(), { apiKey: "old" }, vi.fn().mockResolvedValue(renewed("new"))),
+      );
+      const terminal = events.find((event) => event.type === "error") as {
+        error: AssistantMessage & { errorStatus?: number };
+      };
       expect(terminal.error.errorMessage).toBe("Qoder: 105 Login expired");
       expect(terminal.error.errorMessage).not.toMatch(/\b(?:401|403|unauthorized|forbidden)\b/i);
       expect(terminal.error.errorStatus).toBeUndefined();
@@ -1659,16 +1744,53 @@ describe("streamQoder login-expiry recovery", () => {
 
   it("aborts while the refreshed identity lookup is hung", async () => {
     let started!: () => void;
-    let finish!: (value: { access: string; userID: string; email: string; name: string; machineID: string; refresh: string; expires: number }) => void;
-    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
-    const lookup = new Promise<{ access: string; userID: string; email: string; name: string; machineID: string; refresh: string; expires: number }>((resolve) => { finish = resolve; });
+    let finish!: (value: {
+      access: string;
+      userID: string;
+      email: string;
+      name: string;
+      machineID: string;
+      refresh: string;
+      expires: number;
+    }) => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const lookup = new Promise<{
+      access: string;
+      userID: string;
+      email: string;
+      name: string;
+      machineID: string;
+      refresh: string;
+      expires: number;
+    }>((resolve) => {
+      finish = resolve;
+    });
     vi.mocked(resolveQoderIdentity)
-      .mockResolvedValueOnce({ access: "old", userID: "test-user", email: "", name: "", machineID: "m", refresh: "", expires: 0 })
-      .mockImplementationOnce(() => { started(); return lookup; });
+      .mockResolvedValueOnce({
+        access: "old",
+        userID: "test-user",
+        email: "",
+        name: "",
+        machineID: "m",
+        refresh: "",
+        expires: 0,
+      })
+      .mockImplementationOnce(() => {
+        started();
+        return lookup;
+      });
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(expiredSse)) as unknown as typeof fetch;
     const controller = new AbortController();
-    const pending = consume(streamQoder(makeModel(), makeContext(), { apiKey: "old", signal: controller.signal },
-      vi.fn().mockResolvedValue(renewed("new"))));
+    const pending = consume(
+      streamQoder(
+        makeModel(),
+        makeContext(),
+        { apiKey: "old", signal: controller.signal },
+        vi.fn().mockResolvedValue(renewed("new")),
+      ),
+    );
     await startedPromise;
     controller.abort();
     const events = await pending;

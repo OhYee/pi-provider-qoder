@@ -36,7 +36,9 @@ describe("host-owned Qoder credential recovery", () => {
     await expect(renew("qoder-cn", "old-cn", 2)).resolves.toMatchObject({ accessToken: "new-cn", userID: "user-a" });
     expect(accessById).toHaveBeenCalledOnce();
     expect(accessById).toHaveBeenCalledWith("qoder-cn", 2, {
-      forceRefresh: true, refreshReason: "auth-recovery", rejectedAccessToken: "old-cn",
+      forceRefresh: true,
+      refreshReason: "auth-recovery",
+      rejectedAccessToken: "old-cn",
     });
   });
 
@@ -47,7 +49,8 @@ describe("host-owned Qoder credential recovery", () => {
       oauth: { accessById },
     };
     await expect(createQoderAuthRecovery(asHost(host))("qoder", "old", 7)).resolves.toMatchObject({
-      accessToken: "peer-new", userID: "user-a",
+      accessToken: "peer-new",
+      userID: "user-a",
     });
     expect(accessById).toHaveBeenCalledWith("qoder", 7, expect.objectContaining({ rejectedAccessToken: "old" }));
   });
@@ -55,11 +58,13 @@ describe("host-owned Qoder credential recovery", () => {
   it("requires exactly one matching OAuth row without provenance and rejects static keys", async () => {
     const accessById = vi.fn();
     const host = {
-      credentials: { list: () => [
-        { id: 1, provider: "qoder", credential: oauth("same") },
-        { id: 2, provider: "qoder", credential: oauth("same") },
-        { id: 3, provider: "qoder", credential: { type: "api_key", key: "static" } },
-      ] },
+      credentials: {
+        list: () => [
+          { id: 1, provider: "qoder", credential: oauth("same") },
+          { id: 2, provider: "qoder", credential: oauth("same") },
+          { id: 3, provider: "qoder", credential: { type: "api_key", key: "static" } },
+        ],
+      },
       oauth: { accessById },
     };
     const renew = createQoderAuthRecovery(asHost(host));
@@ -70,7 +75,9 @@ describe("host-owned Qoder credential recovery", () => {
 
   it("shares an in-flight renewal only for the same provider and rejected token", async () => {
     let release!: (result: { ok: true; accessToken: string; apiKey: string }) => void;
-    const gate = new Promise<{ ok: true; accessToken: string; apiKey: string }>((resolve) => { release = resolve; });
+    const gate = new Promise<{ ok: true; accessToken: string; apiKey: string }>((resolve) => {
+      release = resolve;
+    });
     const rows = [
       { id: 1, provider: "qoder", credential: oauth("old") },
       { id: 2, provider: "qoder-cn", credential: oauth("old") },
@@ -101,7 +108,8 @@ describe("host-owned Qoder credential recovery", () => {
   });
 
   it("does not adopt an OMP fallback, an unchanged token, or a failed refresh", async () => {
-    const accessById = vi.fn()
+    const accessById = vi
+      .fn()
       .mockResolvedValueOnce({ ok: true, accessToken: "new", apiKey: "other" })
       .mockResolvedValueOnce({ ok: true, accessToken: "old", apiKey: "old" })
       .mockResolvedValueOnce({ ok: false });
@@ -128,7 +136,8 @@ describe("host-owned Qoder credential recovery", () => {
       }),
     };
     await expect(createQoderAuthRecovery(asHost(host))("qoder", "old")).resolves.toMatchObject({
-      accessToken: "new", userID: "user-a",
+      accessToken: "new",
+      userID: "user-a",
     });
     expect(modify).toHaveBeenCalledOnce();
   });
@@ -153,7 +162,9 @@ describe("host-owned Qoder credential recovery", () => {
   });
 
   it("uses the old Pi backend lock for conditional expiry and locked host refresh", async () => {
-    let stored: Record<string, { type: "oauth"; access: string; userID: string; expires: number }> = { qoder: oauth("old") };
+    let stored: Record<string, { type: "oauth"; access: string; userID: string; expires: number }> = {
+      qoder: oauth("old"),
+    };
     const withLock = vi.fn((update: (content: string) => { result: unknown; next?: string }) => {
       const result = update(JSON.stringify(stored));
       if (result.next) stored = JSON.parse(result.next);
@@ -182,7 +193,9 @@ describe("host-owned Qoder credential recovery", () => {
       { id: 2, provider: "qoder", credential: oauth("same", "user-b") },
     ];
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const accessById = vi.fn(async (_provider: string, id: number) => {
       await gate;
       const row = rows.find((candidate) => candidate.id === id)!;
@@ -205,10 +218,12 @@ describe("host-owned Qoder credential recovery", () => {
       current = oauth("new", "user-b");
       return { ok: true, accessToken: "new", apiKey: "new" };
     });
-    const renew = createQoderAuthRecovery(asHost({
-      credentials: { list: () => [{ id: 1, provider: "qoder", credential: current }] },
-      oauth: { accessById },
-    }));
+    const renew = createQoderAuthRecovery(
+      asHost({
+        credentials: { list: () => [{ id: 1, provider: "qoder", credential: current }] },
+        oauth: { accessById },
+      }),
+    );
     await expect(renew("qoder", "old", 1)).rejects.toThrow(/identify/);
     expect(accessById).not.toHaveBeenCalled();
     current = oauth("old", "user-a");

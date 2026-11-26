@@ -1314,15 +1314,27 @@ export function streamQoder(
           }
           return;
         } catch (e) {
-          if (e instanceof QoderLoginExpiredError && !authRetried && !e.sawModelOutput &&
-              output.content.length === 0 && renewAccess && !options?.signal?.aborted) {
+          if (
+            e instanceof QoderLoginExpiredError &&
+            !authRetried &&
+            !e.sawModelOutput &&
+            output.content.length === 0 &&
+            renewAccess &&
+            !options?.signal?.aborted
+          ) {
             authRetried = true;
             let renewed: RenewedQoderAccess;
             try {
-              const credentialId = (options as (SimpleStreamOptions & { credentialId?: number }) | undefined)?.credentialId;
+              const credentialId = (options as (SimpleStreamOptions & { credentialId?: number }) | undefined)
+                ?.credentialId;
               renewed = await waitForAbort(renewAccess(model.provider, accessToken, credentialId), options?.signal);
-              if (!renewed.accessToken || renewed.accessToken === accessToken ||
-                  !renewed.userID?.trim() || renewed.userID.trim() === "qoder-user") throw e;
+              if (
+                !renewed.accessToken ||
+                renewed.accessToken === accessToken ||
+                !renewed.userID?.trim() ||
+                renewed.userID.trim() === "qoder-user"
+              )
+                throw e;
               if (userID !== "qoder-user" && userID !== renewed.userID) throw e;
               options?.signal?.throwIfAborted();
               const nextIdentity = await waitForAbort(
@@ -1330,7 +1342,8 @@ export function streamQoder(
                 options?.signal,
               );
               options?.signal?.throwIfAborted();
-              const observedUserID = nextIdentity.userID && nextIdentity.userID !== "qoder-user" ? nextIdentity.userID : undefined;
+              const observedUserID =
+                nextIdentity.userID && nextIdentity.userID !== "qoder-user" ? nextIdentity.userID : undefined;
               if (observedUserID && observedUserID !== renewed.userID) throw e;
               const identityChanged = userID !== renewed.userID;
               userID = renewed.userID;
@@ -1345,7 +1358,13 @@ export function streamQoder(
             } catch {
               throw e;
             }
-            headers = buildAuthHeaders(encodedBytes, chatURL, { userID, authToken: accessToken, name, email, machineID });
+            headers = buildAuthHeaders(encodedBytes, chatURL, {
+              userID,
+              authToken: accessToken,
+              name,
+              email,
+              machineID,
+            });
             // Authentication recovery has its own one-retry budget.
             attempt--;
             continue;

@@ -4,9 +4,10 @@ import { join } from "node:path";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearQoderModelsMemCache, getCachedModels, staticModels } from "../catalog.js";
+import { clearQoderModelsMemCache, getCachedModels, staticCnModels, staticModels } from "../catalog.js";
 import { clearCosyVersionMemCache } from "../cosy-version.js";
 import initExtension, { refreshQoderModelsForMode } from "../index.js";
+import { getQoderRegionConfig, QODER_MODES } from "../region.js";
 
 function testHome(): string {
   return process.env.HOME || process.env.USERPROFILE || homedir();
@@ -45,6 +46,9 @@ function stubCatalogFetch(chat: unknown[]): ReturnType<typeof vi.fn> {
 }
 
 beforeEach(() => {
+  // 这些覆盖路径优先于 HOME，必须一并限制在测试目录内。
+  vi.stubEnv("PI_CODING_AGENT_DIR", join(testHome(), ".pi", "agent"));
+  vi.stubEnv("QODER_ENDPOINTS_CACHE_PATH", undefined);
   clearQoderModelsMemCache();
   clearCosyVersionMemCache();
   rmSync(CACHE_PATH, { force: true });
@@ -60,6 +64,7 @@ afterEach(() => {
   rmSync(COSY_CACHE_PATH, { force: true });
   clearQoderModelsMemCache();
   clearCosyVersionMemCache();
+  vi.unstubAllEnvs();
 });
 
 describe("refreshQoderModelsForMode", () => {
@@ -128,7 +133,15 @@ describe("refreshQoderModelsForMode", () => {
 
 describe("provider registration", () => {
   it("registers a refreshModels hook so the host refreshes qoder after login", async () => {
-    process.env.PI_PROVIDER_QODER_SKIP_UPDATE_CHECK = "1";
+    // 启动会用环境令牌自动登录；此处只验证无凭证时的静态注册。
+    for (const mode of QODER_MODES) {
+      for (const name of getQoderRegionConfig(mode).patEnvNames) {
+        vi.stubEnv(name, undefined);
+      }
+    }
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network must not be used"));
+    vi.stubGlobal("fetch", fetchMock);
+
     const registered = new Map<string, ProviderConfig>();
     const pi = {
       registerProvider: (id: string, config: ProviderConfig) => {
@@ -139,11 +152,7 @@ describe("provider registration", () => {
       registerFlag: () => {},
     } as unknown as ExtensionAPI;
 
-    try {
-      await initExtension(pi);
-    } finally {
-      delete process.env.PI_PROVIDER_QODER_SKIP_UPDATE_CHECK;
-    }
+    await initExtension(pi);
 
     const qoder = registered.get("qoder");
     expect(qoder).toBeDefined();
@@ -154,5 +163,7 @@ describe("provider registration", () => {
     // The static snapshot is still registered (refresh replaces it later);
     // the hook is what keeps it from staying static after login.
     expect(qoder?.models?.map((model) => model.id)).toEqual(staticModels.map((model) => model.id));
+    expect(qoderCn?.models?.map((model) => model.id)).toEqual(staticCnModels.map((model) => model.id));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

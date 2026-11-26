@@ -1,11 +1,7 @@
-// src/index.ts
-import { createRequire as createRequire3 } from "node:module";
-
 // src/auth/oauth.ts
 import { existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { dirname as dirname4, join as join4 } from "node:path";
-import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 
 // src/catalog.ts
 import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
@@ -31,7 +27,7 @@ function getHomeDir() {
   return process.env.HOME || process.env.USERPROFILE || homedir();
 }
 function getCosyVersionCachePath() {
-  return join(getHomeDir(), ".pi", "agent", CACHE_FILE);
+  return join(process.env.PI_CODING_AGENT_DIR || join(getHomeDir(), ".pi", "agent"), CACHE_FILE);
 }
 var cosyVersionMem = /* @__PURE__ */ new Map();
 function readCosyVersionCache() {
@@ -160,7 +156,10 @@ function getHomeDir2() {
 }
 function getMachineId() {
   const home = getHomeDir2();
-  const paths = [join2(home, ".qoder", ".auth", "machine_id"), join2(home, ".pi", "agent", "qoder-machine-id")];
+  const paths = [
+    join2(home, ".qoder", ".auth", "machine_id"),
+    join2(process.env.PI_CODING_AGENT_DIR || join2(home, ".pi", "agent"), "qoder-machine-id")
+  ];
   for (const p of paths) {
     if (existsSync2(p)) {
       try {
@@ -326,7 +325,10 @@ function getHomeDir3() {
   return process.env.HOME || process.env.USERPROFILE || homedir3();
 }
 function getQoderCachePath(mode) {
-  return join3(getHomeDir3(), ".pi", "agent", getQoderRegionConfig(mode).modelCacheFile);
+  return join3(
+    process.env.PI_CODING_AGENT_DIR || join3(getHomeDir3(), ".pi", "agent"),
+    getQoderRegionConfig(mode).modelCacheFile
+  );
 }
 var modelCacheMem = /* @__PURE__ */ new Map();
 function readParsedModelCache(mode) {
@@ -1148,13 +1150,20 @@ async function runDeviceFlow(callbacks) {
 }
 
 // src/auth/oauth.ts
-var AuthStorage2 = PiCodingAgent.AuthStorage;
+var authStoragePromise;
+function loadAuthStorage() {
+  authStoragePromise ??= import("@earendil-works/pi-coding-agent").then(
+    (namespace) => namespace.AuthStorage,
+    () => void 0
+  );
+  return authStoragePromise;
+}
 var identityCache = /* @__PURE__ */ new Map();
 function getHomeDir4() {
   return process.env.HOME || process.env.USERPROFILE || homedir4();
 }
 function getAuthFilePath() {
-  return join4(getHomeDir4(), ".pi", "agent", "auth.json");
+  return join4(process.env.PI_CODING_AGENT_DIR || join4(getHomeDir4(), ".pi", "agent"), "auth.json");
 }
 var authFileMem;
 function readAuthFileCached() {
@@ -1207,9 +1216,10 @@ async function autoLoginQoderFromEnvironment(providerID, mode) {
   const pat = getQoderPatForMode(mode);
   if (!pat) return;
   const credentials = await credentialsFromPat(pat, mode);
-  if (typeof AuthStorage2?.create === "function") {
+  const AuthStorage = await loadAuthStorage();
+  if (typeof AuthStorage?.create === "function") {
     try {
-      const authStorage = AuthStorage2.create();
+      const authStorage = AuthStorage.create();
       authStorage.set(providerID, { type: "oauth", ...credentials });
     } catch {
       saveCredentialsToAuthFile(providerID, credentials);
@@ -1417,7 +1427,8 @@ function createQoderAuthRecovery(host) {
         });
         const key2 = (await host.getAuth(provider))?.auth.apiKey;
         const current = await host.credentials.read(provider);
-        if (current?.type === "oauth" && current.userID === userID && current.access === key2 && hasRealUserID(current)) renewed = current;
+        if (current?.type === "oauth" && current.userID === userID && current.access === key2 && hasRealUserID(current))
+          renewed = current;
       } else {
         const userID = host.storage?.withLock((content) => {
           const stored = JSON.parse(content || "{}");
@@ -1433,9 +1444,11 @@ function createQoderAuthRecovery(host) {
         const key2 = await host.getApiKey(provider);
         host.reload();
         const updated = host.get(provider);
-        if (updated?.type === "oauth" && updated.userID === userID && updated.access === key2 && hasRealUserID(updated)) renewed = updated;
+        if (updated?.type === "oauth" && updated.userID === userID && updated.access === key2 && hasRealUserID(updated))
+          renewed = updated;
       }
-      if (!renewed || renewed.access === rejectedAccess) throw new Error("Qoder credential renewal did not produce a new token.");
+      if (!renewed || renewed.access === rejectedAccess)
+        throw new Error("Qoder credential renewal did not produce a new token.");
       return renewedIdentity(renewed);
     })();
     pending.set(key, renewal);
@@ -1457,7 +1470,8 @@ function isQoderLoginExpired(body) {
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) return false;
     const error = body;
-    if ((error.code === "105" || error.code === 105) && typeof error.message === "string" && /^login expired$/i.test(error.message.trim())) return true;
+    if ((error.code === "105" || error.code === 105) && typeof error.message === "string" && /^login expired$/i.test(error.message.trim()))
+      return true;
     if (error.code !== "403" && error.code !== 403) return false;
     body = error.message;
   }
@@ -10005,7 +10019,7 @@ function getHomeDir5() {
   return process.env.HOME || process.env.USERPROFILE || homedir5();
 }
 function getCachePath() {
-  return process.env.QODER_ENDPOINTS_CACHE_PATH || join5(getHomeDir5(), ".pi", "agent", "qoder-endpoints-cache.json");
+  return process.env.QODER_ENDPOINTS_CACHE_PATH || join5(process.env.PI_CODING_AGENT_DIR || join5(getHomeDir5(), ".pi", "agent"), "qoder-endpoints-cache.json");
 }
 function normalizeBaseUrl(url) {
   const trimmed = url.trim();
@@ -11374,7 +11388,8 @@ function streamQoder(model, context, options, renewAccess) {
             try {
               const credentialId = options?.credentialId;
               renewed = await waitForAbort(renewAccess(model.provider, accessToken, credentialId), options?.signal);
-              if (!renewed.accessToken || renewed.accessToken === accessToken || !renewed.userID?.trim() || renewed.userID.trim() === "qoder-user") throw e;
+              if (!renewed.accessToken || renewed.accessToken === accessToken || !renewed.userID?.trim() || renewed.userID.trim() === "qoder-user")
+                throw e;
               if (userID !== "qoder-user" && userID !== renewed.userID) throw e;
               options?.signal?.throwIfAborted();
               const nextIdentity = await waitForAbort(
@@ -11397,7 +11412,13 @@ function streamQoder(model, context, options, renewAccess) {
             } catch {
               throw e;
             }
-            headers = buildAuthHeaders(encodedBytes, chatURL, { userID, authToken: accessToken, name, email, machineID });
+            headers = buildAuthHeaders(encodedBytes, chatURL, {
+              userID,
+              authToken: accessToken,
+              name,
+              email,
+              machineID
+            });
             attempt--;
             continue;
           }
@@ -11489,58 +11510,6 @@ function streamQoder(model, context, options, renewAccess) {
   return stream;
 }
 
-// src/update-check.ts
-var PACKAGE_NAME = "pi-provider-qoder";
-var REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
-var DEFAULT_TIMEOUT_MS2 = 2e3;
-function parseSemver(version) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-function compareVersions(a, b2) {
-  const left = parseSemver(a);
-  const right = parseSemver(b2);
-  if (!left || !right) return 0;
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return left[index] - right[index];
-  }
-  return 0;
-}
-function upgradeCommand(hostExecutable) {
-  const binary = (hostExecutable ?? "").split(/[\\/]/).pop() ?? "";
-  if (/omp/i.test(binary)) return `omp plugin upgrade ${PACKAGE_NAME}`;
-  if (/^pi/i.test(binary)) return `pi install npm:${PACKAGE_NAME}`;
-  return `omp plugin upgrade ${PACKAGE_NAME} (pi: pi install npm:${PACKAGE_NAME})`;
-}
-function formatUpdateNotice(current, latest, hostExecutable) {
-  if (compareVersions(latest, current) <= 0) return null;
-  return `[${PACKAGE_NAME}] ${latest} is available (running ${current}). Upgrade: ${upgradeCommand(hostExecutable)}`;
-}
-async function fetchLatestVersion(fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_MS2) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetchImpl(REGISTRY_URL, {
-      signal: controller.signal,
-      headers: { accept: "application/json" }
-    });
-    if (!response.ok) return null;
-    const body = await response.json();
-    return typeof body.version === "string" ? body.version : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-async function checkForUpdate(options) {
-  if (options.disabled) return null;
-  const latest = await fetchLatestVersion(options.fetchImpl ?? fetch, options.timeoutMs);
-  if (!latest) return null;
-  return formatUpdateNotice(options.currentVersion, latest, options.hostExecutable);
-}
-
 // src/usage-provider.ts
 var KNOWN_UNITS = {
   percent: true,
@@ -11627,8 +11596,6 @@ function createQoderUsageProvider(mode, providerID) {
 
 // src/index.ts
 var QODER_API = "qoder-api";
-var requirePackageJson = createRequire3(import.meta.url);
-var CURRENT_VERSION = requirePackageJson("../package.json").version ?? "0.0.0";
 async function registerQoderApi(stream) {
   try {
     const compat = await import("@earendil-works/pi-ai/compat");
@@ -11732,13 +11699,6 @@ async function index_default(pi) {
   };
   const stream = (model, context, options) => streamQoder(model, context, options, renew);
   await registerQoderApi(stream);
-  void checkForUpdate({
-    currentVersion: CURRENT_VERSION,
-    hostExecutable: process.argv[1],
-    disabled: process.env.PI_PROVIDER_QODER_SKIP_UPDATE_CHECK === "1"
-  }).then((notice) => {
-    if (notice) console.error(notice);
-  });
   for (const mode of QODER_MODES) {
     const providerID = getQoderRegionConfig(mode).providerID;
     applyCachedChatEndpoint(mode);

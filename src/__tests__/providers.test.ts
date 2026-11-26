@@ -209,7 +209,9 @@ describe("shared provider recovery dispatch", () => {
     const providers = new Map<string, Record<string, unknown>>();
     const handlers = new Map<string, Array<(event: unknown, context: unknown) => Promise<void>>>();
     const pi = {
-      registerProvider(provider: string, config: Record<string, unknown>) { providers.set(provider, config); },
+      registerProvider(provider: string, config: Record<string, unknown>) {
+        providers.set(provider, config);
+      },
       on(event: string, handler: (event: unknown, context: unknown) => Promise<void>) {
         const existing = handlers.get(event) ?? [];
         existing.push(handler);
@@ -226,24 +228,41 @@ describe("shared provider recovery dispatch", () => {
       return { ok: true, accessToken, apiKey: accessToken };
     });
     const authStorage = {
-      credentials: { list: (provider: string) => [{
-        id: provider === "qoder" ? 1 : 2, provider, credential: credentials[provider],
-      }] },
+      credentials: {
+        list: (provider: string) => [
+          {
+            id: provider === "qoder" ? 1 : 2,
+            provider,
+            credential: credentials[provider],
+          },
+        ],
+      },
       oauth: { accessById },
     };
     // Load after vi.doMock so registration uses the observable stream seam.
     const { default: registerProviders } = await import("../index.js");
     await registerProviders(pi as never);
-    await handlers.get("session_start")?.[0]({}, {
-      modelRegistry: { authStorage, getApiKeyForProvider: vi.fn().mockResolvedValue(undefined) },
-    });
+    await handlers.get("session_start")?.[0](
+      {},
+      {
+        modelRegistry: { authStorage, getApiKeyForProvider: vi.fn().mockResolvedValue(undefined) },
+      },
+    );
     const dispatch = providers.get("qoder-cn")?.streamSimple as (
-      model: { provider: string }, context: unknown, options: { apiKey: string; credentialId: number },
+      model: { provider: string },
+      context: unknown,
+      options: { apiKey: string; credentialId: number },
     ) => Promise<{ accessToken: string }>;
-    await expect(dispatch({ provider: "qoder" }, {}, { apiKey: "qoder-old", credentialId: 1 }))
-      .resolves.toMatchObject({ accessToken: "qoder-1-new", userID: "global-user" });
-    await expect(dispatch({ provider: "qoder-cn" }, {}, { apiKey: "qoder-cn-old", credentialId: 2 }))
-      .resolves.toMatchObject({ accessToken: "qoder-cn-2-new", userID: "cn-user" });
-    expect(accessById.mock.calls.map(([provider, id]) => [provider, id])).toEqual([["qoder", 1], ["qoder-cn", 2]]);
+    await expect(dispatch({ provider: "qoder" }, {}, { apiKey: "qoder-old", credentialId: 1 })).resolves.toMatchObject({
+      accessToken: "qoder-1-new",
+      userID: "global-user",
+    });
+    await expect(
+      dispatch({ provider: "qoder-cn" }, {}, { apiKey: "qoder-cn-old", credentialId: 2 }),
+    ).resolves.toMatchObject({ accessToken: "qoder-cn-2-new", userID: "cn-user" });
+    expect(accessById.mock.calls.map(([provider, id]) => [provider, id])).toEqual([
+      ["qoder", 1],
+      ["qoder-cn", 2],
+    ]);
   });
 });

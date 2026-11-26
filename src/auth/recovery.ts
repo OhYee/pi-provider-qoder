@@ -48,11 +48,17 @@ export type RenewedQoderAccess = {
   machineID?: string;
 };
 export type RenewQoderAccess = (
-  provider: string, rejectedAccess: string, credentialId?: number,
+  provider: string,
+  rejectedAccess: string,
+  credentialId?: number,
 ) => Promise<RenewedQoderAccess>;
 
 function hasRealUserID(credential: OAuthCredential): boolean {
-  return typeof credential.userID === "string" && credential.userID.trim() !== "" && credential.userID.trim() !== "qoder-user";
+  return (
+    typeof credential.userID === "string" &&
+    credential.userID.trim() !== "" &&
+    credential.userID.trim() !== "qoder-user"
+  );
 }
 
 function renewedIdentity(credential: OAuthCredential): RenewedQoderAccess {
@@ -71,10 +77,16 @@ export function createQoderAuthRecovery(host: Host): RenewQoderAccess {
   return (provider, rejectedAccess, credentialId) => {
     let row: { id: number; userID: string } | undefined;
     if ("oauth" in host) {
-      const matches = host.credentials.list(provider).filter((candidate) =>
-        candidate.provider === provider && candidate.credential.type === "oauth" &&
-        (credentialId === undefined ? candidate.credential.access === rejectedAccess : candidate.id === credentialId),
-      );
+      const matches = host.credentials
+        .list(provider)
+        .filter(
+          (candidate) =>
+            candidate.provider === provider &&
+            candidate.credential.type === "oauth" &&
+            (credentialId === undefined
+              ? candidate.credential.access === rejectedAccess
+              : candidate.id === credentialId),
+        );
       const match = matches[0];
       if (matches.length !== 1 || match.credential.type !== "oauth" || !hasRealUserID(match.credential)) {
         return Promise.reject(new Error("Qoder could not identify the rejected OAuth credential."));
@@ -96,9 +108,15 @@ export function createQoderAuthRecovery(host: Host): RenewQoderAccess {
           rejectedAccessToken: rejectedAccess,
         });
         const updated = host.credentials.list(provider).find((candidate) => candidate.id === row?.id);
-        if (result?.ok && result.apiKey === result.accessToken && updated?.provider === provider &&
-            updated.credential.type === "oauth" && updated.credential.access === result.accessToken &&
-            updated.credential.userID === row.userID && hasRealUserID(updated.credential)) {
+        if (
+          result?.ok &&
+          result.apiKey === result.accessToken &&
+          updated?.provider === provider &&
+          updated.credential.type === "oauth" &&
+          updated.credential.access === result.accessToken &&
+          updated.credential.userID === row.userID &&
+          hasRealUserID(updated.credential)
+        ) {
           renewed = updated.credential;
         }
       } else if ("getAuth" in host) {
@@ -112,7 +130,8 @@ export function createQoderAuthRecovery(host: Host): RenewQoderAccess {
         });
         const key = (await host.getAuth(provider))?.auth.apiKey;
         const current = await host.credentials.read(provider);
-        if (current?.type === "oauth" && current.userID === userID && current.access === key && hasRealUserID(current)) renewed = current;
+        if (current?.type === "oauth" && current.userID === userID && current.access === key && hasRealUserID(current))
+          renewed = current;
       } else {
         // Older Pi exposes no compare-and-set API; use its backend lock so
         // another process's newer credential is never overwritten.
@@ -130,15 +149,19 @@ export function createQoderAuthRecovery(host: Host): RenewQoderAccess {
         const key = await host.getApiKey(provider);
         host.reload();
         const updated = host.get(provider);
-        if (updated?.type === "oauth" && updated.userID === userID && updated.access === key && hasRealUserID(updated)) renewed = updated;
+        if (updated?.type === "oauth" && updated.userID === userID && updated.access === key && hasRealUserID(updated))
+          renewed = updated;
       }
-      if (!renewed || renewed.access === rejectedAccess) throw new Error("Qoder credential renewal did not produce a new token.");
+      if (!renewed || renewed.access === rejectedAccess)
+        throw new Error("Qoder credential renewal did not produce a new token.");
       return renewedIdentity(renewed);
     })();
     pending.set(key, renewal);
-    void renewal.finally(() => {
-      pending.delete(key);
-    }).catch(() => {});
+    void renewal
+      .finally(() => {
+        pending.delete(key);
+      })
+      .catch(() => {});
     return renewal;
   };
 }
@@ -155,8 +178,12 @@ export function isQoderLoginExpired(body: unknown): boolean {
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) return false;
     const error = body as Record<string, unknown>;
-    if ((error.code === "105" || error.code === 105) &&
-        typeof error.message === "string" && /^login expired$/i.test(error.message.trim())) return true;
+    if (
+      (error.code === "105" || error.code === 105) &&
+      typeof error.message === "string" &&
+      /^login expired$/i.test(error.message.trim())
+    )
+      return true;
     if (error.code !== "403" && error.code !== 403) return false;
     body = error.message;
   }
