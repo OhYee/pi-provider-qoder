@@ -30,8 +30,7 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      # `prepublishOnly` runs on `npm publish` only, in a different workflow, so
-      # its catalog guard cannot stop this job from publishing a stale version.
+      # Check independently of the release workflow before publishing the dist branch.
       - name: Marketplace catalog matches package.json
         run: node scripts/sync-marketplace-version.mjs --check
 

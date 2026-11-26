@@ -204,8 +204,9 @@ Releases publish a build-only `dist` branch for the marketplace catalog
 and commit the updated bundle; CI checks that it matches the source.
 
 The catalog at `.omp-plugin/marketplace.json` must declare the released version:
-`npm run release:sync-marketplace` keeps it in step, and `prepublishOnly` fails
-when the two drift.
+`npm run release:sync-marketplace` keeps it in step. The release workflow checks
+that the tag, package version, and catalog version agree; the dist workflow also
+checks that the package and catalog versions agree.
 
 ## License
 
