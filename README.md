@@ -2,13 +2,15 @@
 
 A [pi](https://shittycodingagent.ai/) extension that connects pi to Qoder.
 
-This fork contains authentication-recovery changes. Install its default branch
-directly in omp; the upstream npm and marketplace commands below install an
-upstream release, not this fork:
+This fork is independently maintained and publishes its own GitHub Releases starting
+with `v0.6.15`. Install its default branch directly in omp:
 
 ```bash
 omp plugin install github:OhYee/pi-provider-qoder
 ```
+
+The npm package `pi-provider-qoder` is published by upstream simonsmh. The npm and
+upstream marketplace commands below install upstream code, without this fork's changes:
 
 ```bash
 pi install npm:pi-provider-qoder
@@ -186,8 +188,8 @@ Session accounting regression tests use these samples without making live reques
 
 ## Marketplace install (automatic updates)
 
-An npm install never self-updates. To let omp keep this extension current, add this
-repository as a marketplace and install from it:
+An npm install never self-updates. To let omp keep the upstream extension current,
+add the upstream repository as a marketplace and install from it:
 
 ```bash
 omp plugin marketplace add simonsmh/pi-provider-qoder
