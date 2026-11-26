@@ -198,7 +198,8 @@ describe("host-owned Qoder credential recovery", () => {
     });
     const accessById = vi.fn(async (_provider: string, id: number) => {
       await gate;
-      const row = rows.find((candidate) => candidate.id === id)!;
+      const row = rows.find((candidate) => candidate.id === id);
+      if (!row) throw new Error(`Missing credential row ${id}`);
       row.credential.access = `new-${id}`;
       return { ok: true, accessToken: row.credential.access, apiKey: row.credential.access };
     });
